@@ -169,6 +169,44 @@ eclipseCountiesFullDf <- eclipseCountiesFullDf %>% inner_join(umbraCountyContact
     CivilianEmployed
   )
 
+cbp <- read_csv('/opt/data/Census/cbp15co.txt')
+cbp <- cbp %>%
+  mutate(CountyFIPS=paste0(FIPSTATE, FIPSCTY)) %>%
+  select(CountyFIPS, NAICS, MidMarchEmployees=EMP, Establishments=EST) %>%
+  filter(NAICS %in% c(
+    '------',
+    '721110',
+    '721120',
+    '712130',
+    '712190',
+    '72251/'
+  )) %>%
+  mutate(Industry=case_when(
+    .$NAICS=='------' ~ 'Total',
+    .$NAICS=='721110' | .$NAICS=='721120' ~ 'Hotel',
+    .$NAICS=='712130' ~ 'ZooBotanical',
+    .$NAICS=='712190' ~ 'NaturePark',
+    .$NAICS=='72251/' ~ 'Restaurant'
+  ))
+
+cbp <- inner_join(
+  cbp %>%
+    select(-NAICS, -MidMarchEmployees) %>%
+    group_by(CountyFIPS, Industry) %>%
+    summarize(Establishments=sum(Establishments)) %>%
+    spread(Industry, Establishments) %>% ungroup() %>%
+    rename_at(vars(-CountyFIPS), funs(sprintf("Establishments%s", .))),
+  cbp %>%
+    select(-NAICS, -Establishments) %>%
+    group_by(CountyFIPS, Industry) %>%
+    summarize(MidMarchEmployees=sum(MidMarchEmployees)) %>%
+    spread(Industry, MidMarchEmployees) %>% ungroup() %>%
+    rename_at(vars(-CountyFIPS), funs(sprintf("MidMarchEmployees%s", .))),
+  by='CountyFIPS'
+)
+
+eclipseCountiesFullDf <- eclipseCountiesFullDf %>% left_join(cbp, by='CountyFIPS')
+
 write_csv(eclipseCountiesFullDf, 'eclipse-counties.csv')
 
 ggplot(mapping=aes(x=long, y=lat, group=group)) +
