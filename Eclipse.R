@@ -31,15 +31,27 @@ eclipseUmbraShp <- spTransform(eclipseUmbraShp, proj4string(countiesShp))
 eclipseUmbraShp <- gIntersection(eclipseUmbraShp, statesShp)
 
 eclipseCountiesShp <- gIntersection(eclipseUmbraShp, countiesShp, byid=c(FALSE, TRUE))
+eclipseCountiesShpData <- map_df(eclipseCountiesShp@polygons, function(polygon) {
+  data.frame(ID=polygon@ID) %>% mutate_all(as.character)
+}) %>% inner_join(countiesDf, by='ID')
+rownames(eclipseCountiesShpData) <- eclipseCountiesShpData$ID
+eclipseCountiesShp <- SpatialPolygonsDataFrame(eclipseCountiesShp, eclipseCountiesShpData)
 
 # note: convert area from sq meters to sq miles
-eclipseCountiesDf <- map_df(eclipseCountiesShp@polygons, function(polygon) {
-  tibble(ID=polygon@ID)
+eclipseCountiesDf <- map_df(eclipseCountiesShp@data$GEOID, function(CountyFIPS) {
+  ss <- subset(eclipseCountiesShp, GEOID==CountyFIPS)
+  p4s <- paste0('+proj=aea +lat_1=', ss@bbox['y','min'], ' +lat_2=', ss@bbox['y','max'],
+                    ' +lon_1=', ss@bbox['x','min'], ' +lon_2=', ss@bbox['x','max'], ' +x_0=0 +y_0=0 +ellps=GRS80 +datum=NAD83 +units=m +no_defs')
+  crs <- CRS(p4s)
+  ss <- spTransform(ss, crs)
+  polygon <- ss@polygons[[1]]
+  tibble(ID=polygon@ID, AreaInUmbra=gArea(ss))
 }) %>% inner_join(countiesDf, by='ID') %>%
-  select(StateFIPS=STATEFP, CountyFIPS=GEOID, CountyName=NAME, ShapefileID=ID, ALAND, AWATER) %>%
-  mutate(Area=(as.numeric(as.character(ALAND)) + as.numeric(as.character(AWATER)))*3.86102e-7) %>%
+  select(StateFIPS=STATEFP, CountyFIPS=GEOID, CountyName=NAME, ShapefileID=ID, ALAND, AWATER, AreaInUmbra) %>%
+  mutate(Area=(as.numeric(as.character(ALAND)) + as.numeric(as.character(AWATER)))*3.86102e-7,
+         AreaInUmbra=AreaInUmbra*3.86102e-7) %>%
   select(-ALAND, -AWATER) %>%
-  mutate_at(vars(-Area), as.character) %>%
+  mutate_at(vars(-Area, -AreaInUmbra), as.character) %>%
   inner_join(statesDf, by='StateFIPS')
 
 eclipseCountiesShp <- subset(countiesShp, GEOID %in% eclipseCountiesDf$CountyFIPS)
@@ -49,16 +61,45 @@ statesSdf <- fortify(statesShp)
 eclipseUmbraSdf <- fortify(eclipseUmbraShp)
 
 census_api_key(Sys.getenv('CENSUS_API_KEY'))
-#acsVariables <- load_variables(2015, 'acs5', cache=TRUE)
+acsVariables <- load_variables(2015, 'acs5', cache=TRUE)
 
-acsData <- get_acs(geography='county', variables=c('B01001_001E'), output='wide') %>%
+acsData <- get_acs(geography='county',
+                   variables=c('B01001_001E',
+                               'B19019_001E',
+                               'B01002_001E',
+                               'B15003_002E','B15003_003E','B15003_004E','B15003_005E','B15003_006E','B15003_007E','B15003_008E','B15003_009E','B15003_010E','B15003_011E','B15003_012E','B15003_013E','B15003_014E','B15003_015E','B15003_016E',
+                               'B15003_017E','B15003_018E','B15003_019E','B15003_020E','B15003_021E',
+                               'B15003_022E','B15003_023E','B15003_024E','B15003_025E',
+                               'B19066_001E',
+                               'B19313_001E',
+                               'B25079_001E',
+                               'B25001_001E',
+                               'B23025_003E',
+                               'B23025_004E'), output='wide') %>%
+  mutate(LessThanHighSchoolGrad=B15003_002E+B15003_003E+B15003_004E+B15003_005E+B15003_006E+B15003_007E+B15003_008E+B15003_009E+B15003_010E+B15003_011E+B15003_012E+B15003_013E+B15003_014E+B15003_015E+B15003_016E,
+         HighSchoolGrad=B15003_017E+B15003_018E+B15003_019E+B15003_020E+B15003_021E,
+         BachelorAndAbove=B15003_022E+B15003_023E+B15003_024E+B15003_025E) %>%
   select(CountyFIPS=GEOID,
-         TotalPopulation=B01001_001E)
+         TotalPopulation=B01001_001E,
+         MedianHouseholdIncome=B19019_001E,
+         MedianAge=B01002_001E,
+         LessThanHighSchoolGrad, HighSchoolGrad, BachelorAndAbove,
+         AggregateSSI=B19066_001E,
+         AggregateIncome=B19313_001E,
+         AggregateOOHousingValue=B25079_001E,
+         HousingUnits=B25001_001E,
+         CivilianLaborForce=B23025_003E,
+         CivilianEmployed=B23025_004E)
 
-electionData2016 <- read_csv('https://query.data.world/s/KZ3ZPaNQIiw85_R4ZSXw9--gNxAfoR') %>% select(-StateName, -CountyName, -StateAbbr)
+electionData2016 <- read_csv('https://query.data.world/s/KZ3ZPaNQIiw85_R4ZSXw9--gNxAfoR') %>%
+  select(County, trump, clinton, totalvotes)
+registrationData2016 <- read_csv('https://query.data.world/s/wPKv3e5isFUb0wxKyk8jdMowYtgvCQ') %>%
+  filter(Year==2016 & Month==11) %>%
+  select(County, RegisteredVoters=Total)
 
 eclipseCountiesFullDf <- inner_join(eclipseCountiesDf, acsData, by='CountyFIPS') %>%
-  inner_join(electionData2016, by=c('CountyFIPS'='County'))
+  inner_join(electionData2016, by=c('CountyFIPS'='County')) %>%
+  inner_join(registrationData2016, by=c('CountyFIPS'='County'))
 
 eclipseStates <- eclipseCountiesFullDf %>% select(StateName, StateFIPS) %>% distinct()
 
@@ -112,8 +153,20 @@ eclipseCountiesFullDf <- eclipseCountiesFullDf %>% inner_join(umbraCountyContact
     UmbraDuration,
     TotalPopulation,
     Area,
+    AreaInUmbra,
     Trump=trump,
-    Clinton=clinton
+    Clinton=clinton,
+    Total2016Votes=totalvotes,
+    RegisteredVoters,
+    MedianHouseholdIncome,
+    MedianAge,
+    LessThanHighSchoolGrad, HighSchoolGrad, BachelorAndAbove,
+    AggregateSSI,
+    AggregateIncome,
+    AggregateOOHousingValue,
+    HousingUnits,
+    CivilianLaborForce,
+    CivilianEmployed
   )
 
 write_csv(eclipseCountiesFullDf, 'eclipse-counties.csv')
